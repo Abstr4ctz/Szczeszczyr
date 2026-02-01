@@ -1,0 +1,15 @@
+## Interface: 11200
+## Title: Szczeszczyr
+## Notes: Corpse tracking & smart resurrection
+## Author: Abstractz
+## SavedVariables: SzczeszczyrDB
+Bindings.xml
+Core.lua
+Data\Spells.lua
+Settings.lua
+State.lua
+Tracking.lua
+Targeting.lua
+Casting.lua
+UI\CorpseTracker.lua
+UI\Buttons.lua

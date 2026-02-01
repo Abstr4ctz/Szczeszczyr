@@ -1,0 +1,8 @@
+<Bindings>
+    <Binding name="SZCZESZCZYR_SALTS" header="SZCZESZCZYR">
+        Szczeszczyr_DoSalts()
+    </Binding>
+    <Binding name="SZCZESZCZYR_RES">
+        Szczeszczyr_DoRes()
+    </Binding>
+</Bindings>
