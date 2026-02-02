@@ -1,4 +1,5 @@
-No overlap smart ressurection. Handles mouse clicks and keybinds.
+No overlap smart ressurection and corpse tracking. Activate through mouse clicks and keybinds.
+Handles Powerful Smelling Salts on all classes.
 
 Left click to ress.  
 Right click to skip to next corpse.  
