@@ -7,10 +7,8 @@ local Szcz = Szczeszczyr
 
 -- Localize globals
 local GetTime = GetTime
-local GetNumRaidMembers = GetNumRaidMembers
-local GetNumPartyMembers = GetNumPartyMembers
 local UnitIsDeadOrGhost = UnitIsDeadOrGhost
-local UnitExists = UnitExists
+local pairs = pairs
 local GetSpellCooldown = GetSpellCooldown
 local floor = math.floor
 
@@ -34,10 +32,6 @@ local currentSpellTargetGuid = nil
 
 -- Forward declaration for SetFrameVisible (buttonFrame defined below)
 local SetFrameVisible
-
--- Use shared unit ID strings from Data.lua
-local RAID_UNITS = Szcz.Data.RAID_UNITS
-local PARTY_UNITS = Szcz.Data.PARTY_UNITS
 
 --[[
     Create the button container frame
@@ -230,34 +224,6 @@ local function FormatDistance(dist)
 end
 
 --[[
-    Clean up recentlyRessed players who accepted
-]]
-local function CleanupAcceptedRes()
-    if not Szcz.recentlyRessed then return end
-
-    local numRaid = GetNumRaidMembers()
-    local numParty = GetNumPartyMembers()
-
-    if numRaid > 0 then
-        for i = 1, numRaid do
-            local unitId = RAID_UNITS[i]
-            local _, guid = UnitExists(unitId)
-            if guid and Szcz.recentlyRessed[guid] and not UnitIsDeadOrGhost(unitId) then
-                Szcz.recentlyRessed[guid] = nil
-            end
-        end
-    elseif numParty > 0 then
-        for i = 1, numParty do
-            local unitId = PARTY_UNITS[i]
-            local _, guid = UnitExists(unitId)
-            if guid and Szcz.recentlyRessed[guid] and not UnitIsDeadOrGhost(unitId) then
-                Szcz.recentlyRessed[guid] = nil
-            end
-        end
-    end
-end
-
---[[
     Update button states
 ]]
 local function UpdateButtonState()
@@ -294,9 +260,6 @@ local function UpdateButtonState()
 
     -- Show frame
     SetFrameVisible(true)
-
-    -- Clean up accepted resurrections
-    CleanupAcceptedRes()
 
     -- Run targeting pipeline
     local saltsTarget, spellTarget, err = Szcz.GetTargetingResults()

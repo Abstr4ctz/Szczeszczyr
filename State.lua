@@ -9,6 +9,7 @@ local Szcz = Szczeszczyr
 local GetNumRaidMembers = GetNumRaidMembers
 local GetNumPartyMembers = GetNumPartyMembers
 local GetBattlefieldStatus = GetBattlefieldStatus
+local pairs = pairs
 
 --[[
     Central state - no scattered globals
@@ -24,6 +25,50 @@ Szcz.state = {
 -- Skipped targets (right-click cycling)
 Szcz.skippedTargets = {}
 Szcz.skipTimestamp = 0  -- GetTime() of last skip
+
+-- Dead player cache (on-demand, only for dead players)
+Szcz.deadCache = {}          -- unitId -> { guid, classFile, name }
+Szcz.deadCacheStale = false  -- Set true on roster/zone change
+
+-- Pool for reusing cache entry tables (avoids garbage when players get ressed)
+local deadCachePool = {}
+local deadCachePoolSize = 0
+
+function Szcz.GetDeadCacheEntry()
+    if deadCachePoolSize > 0 then
+        local entry = deadCachePool[deadCachePoolSize]
+        deadCachePool[deadCachePoolSize] = nil
+        deadCachePoolSize = deadCachePoolSize - 1
+        return entry
+    end
+    return {}
+end
+
+function Szcz.ReturnDeadCacheEntry(entry)
+    entry.guid = nil
+    entry.classFile = nil
+    entry.name = nil
+    deadCachePoolSize = deadCachePoolSize + 1
+    deadCachePool[deadCachePoolSize] = entry
+end
+
+--[[
+    Mark dead cache as stale (lazy invalidation)
+]]
+function Szcz.InvalidateDeadCache()
+    Szcz.deadCacheStale = true
+end
+
+--[[
+    Clear dead cache entirely (called when leaving group)
+]]
+function Szcz.ClearDeadCache()
+    for unitId, entry in pairs(Szcz.deadCache) do
+        Szcz.ReturnDeadCacheEntry(entry)
+        Szcz.deadCache[unitId] = nil
+    end
+    Szcz.deadCacheStale = false
+end
 
 --[[
     Update group state and manage tracking/buttons
@@ -92,6 +137,7 @@ function Szcz.ClearAllTracking()
 
     Szcz.ResetSkippedTargets()
     Szcz.state.trackedGUID = nil
+    Szcz.ClearDeadCache()
 
     Szcz.StopCorpseTracking()
 end

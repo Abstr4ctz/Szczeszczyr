@@ -11,12 +11,12 @@ local UnitExists = UnitExists
 local UnitIsDeadOrGhost = UnitIsDeadOrGhost
 local UnitIsGhost = UnitIsGhost
 local UnitIsConnected = UnitIsConnected
-local UnitClass = UnitClass
-local UnitName = UnitName
 local UnitBuff = UnitBuff
 local GetNumRaidMembers = GetNumRaidMembers
 local GetNumPartyMembers = GetNumPartyMembers
 local UnitPosition = UnitPosition
+local UnitClass = UnitClass
+local UnitName = UnitName
 local GetTime = GetTime
 local table_getn = table.getn
 local table_sort = table.sort
@@ -34,6 +34,7 @@ local deadPool = {}
 local validPool = {}
 local filteredPool = {}
 local tiersPool = { {}, {}, {} }
+local tierCounts = { 0, 0, 0 }  -- Pre-allocated, reset each use
 
 -- Player data objects pool (reuse player info tables)
 local playerPool = {}
@@ -42,6 +43,26 @@ local MAX_POOL_SIZE = 40  -- Max raid size
 
 local function WipeTable(t)
     for k in pairs(t) do t[k] = nil end
+end
+
+--[[
+    Pre-created sort comparators (avoid closure allocation every call)
+    Used by SelectFromList - choosing between these is a simple branch, no alloc
+]]
+local function SortClosest(a, b)
+    if not a or not b then return false end
+    if a.inRange ~= b.inRange then return a.inRange end
+    if not a.distance then return false end
+    if not b.distance then return true end
+    return a.distance < b.distance
+end
+
+local function SortFurthest(a, b)
+    if not a or not b then return false end
+    if a.inRange ~= b.inRange then return a.inRange end
+    if not a.distance then return false end
+    if not b.distance then return true end
+    return a.distance > b.distance
 end
 
 local function WipeTiers()
@@ -84,46 +105,117 @@ end
 
 --[[
     Get all dead players in raid/party
-    Uses table pooling to reduce GC pressure (called every 0.5s during polling)
+    On-demand caching: TRUE ZERO allocations when same players dead as last poll
 ]]
 local function GetDeadPlayers(outTable)
     ReturnAllPlayersToPool(outTable)
     local numRaid = GetNumRaidMembers()
     local numParty = GetNumPartyMembers()
     local idx = 0
+    local deadCache = Szcz.deadCache
+    local cacheStale = Szcz.deadCacheStale
 
     if numRaid > 0 then
         for i = 1, numRaid do
             local unitId = RAID_UNITS[i]
-            -- Cache UnitExists result to avoid double API call
-            local exists, guid = UnitExists(unitId)
-            if exists and UnitIsDeadOrGhost(unitId) and UnitIsConnected(unitId) then
-                local _, classFile = UnitClass(unitId)
-                local player = GetPlayerFromPool()
-                player.unitId = unitId
-                player.classFile = classFile
-                player.guid = guid
-                player.name = UnitName(unitId)
-                idx = idx + 1
-                outTable[idx] = player
+
+            -- Fast check: is this player dead and online?
+            -- UnitIsDeadOrGhost returns nil for empty slots and alive players
+            if UnitIsDeadOrGhost(unitId) and UnitIsConnected(unitId) then
+                local cached = deadCache[unitId]
+
+                if cached and not cacheStale then
+                    -- Cache hit - ZERO allocation
+                    local player = GetPlayerFromPool()
+                    player.unitId = unitId
+                    player.classFile = cached.classFile
+                    player.guid = cached.guid
+                    player.name = cached.name
+                    idx = idx + 1
+                    outTable[idx] = player
+                else
+                    -- Cache miss or stale - fetch and cache
+                    local exists, guid = UnitExists(unitId)
+                    if exists and guid then
+                        local _, classFile = UnitClass(unitId)
+                        local name = UnitName(unitId)
+
+                        -- Get or create cache entry (reuses pooled tables)
+                        if not cached then
+                            cached = Szcz.GetDeadCacheEntry()
+                            deadCache[unitId] = cached
+                        end
+                        cached.guid = guid
+                        cached.classFile = classFile
+                        cached.name = name
+
+                        local player = GetPlayerFromPool()
+                        player.unitId = unitId
+                        player.classFile = classFile
+                        player.guid = guid
+                        player.name = name
+                        idx = idx + 1
+                        outTable[idx] = player
+                    end
+                end
+            else
+                -- Not dead or offline - return cache entry to pool
+                if deadCache[unitId] then
+                    Szcz.ReturnDeadCacheEntry(deadCache[unitId])
+                    deadCache[unitId] = nil
+                end
             end
         end
     elseif numParty > 0 then
         for i = 1, numParty do
             local unitId = PARTY_UNITS[i]
-            -- Cache UnitExists result to avoid double API call
-            local exists, guid = UnitExists(unitId)
-            if exists and UnitIsDeadOrGhost(unitId) and UnitIsConnected(unitId) then
-                local _, classFile = UnitClass(unitId)
-                local player = GetPlayerFromPool()
-                player.unitId = unitId
-                player.classFile = classFile
-                player.guid = guid
-                player.name = UnitName(unitId)
-                idx = idx + 1
-                outTable[idx] = player
+
+            if UnitIsDeadOrGhost(unitId) and UnitIsConnected(unitId) then
+                local cached = deadCache[unitId]
+
+                if cached and not cacheStale then
+                    local player = GetPlayerFromPool()
+                    player.unitId = unitId
+                    player.classFile = cached.classFile
+                    player.guid = cached.guid
+                    player.name = cached.name
+                    idx = idx + 1
+                    outTable[idx] = player
+                else
+                    local exists, guid = UnitExists(unitId)
+                    if exists and guid then
+                        local _, classFile = UnitClass(unitId)
+                        local name = UnitName(unitId)
+
+                        if not cached then
+                            cached = Szcz.GetDeadCacheEntry()
+                            deadCache[unitId] = cached
+                        end
+                        cached.guid = guid
+                        cached.classFile = classFile
+                        cached.name = name
+
+                        local player = GetPlayerFromPool()
+                        player.unitId = unitId
+                        player.classFile = classFile
+                        player.guid = guid
+                        player.name = name
+                        idx = idx + 1
+                        outTable[idx] = player
+                    end
+                end
+            else
+                if deadCache[unitId] then
+                    Szcz.ReturnDeadCacheEntry(deadCache[unitId])
+                    deadCache[unitId] = nil
+                end
             end
         end
+    end
+
+    -- Clear stale flag after processing all dead players
+    if cacheStale then
+        Szcz.deadCacheStale = false
     end
 
     return idx
@@ -291,9 +383,9 @@ local function SelectFromList(players, playerCount, mode)
         preferClosest = (distMode == "closest")
     end
 
-    -- Wipe and group by tier
+    -- Wipe and group by tier (reset pre-allocated tierCounts, no table creation)
     WipeTiers()
-    local tierCounts = { 0, 0, 0 }
+    tierCounts[1], tierCounts[2], tierCounts[3] = 0, 0, 0
 
     for i = 1, playerCount do
         local player = players[i]
@@ -326,24 +418,8 @@ local function SelectFromList(players, playerCount, mode)
         end
     end
 
-    -- Single combined sort: inRange > distance
-    table_sort(selectedTier, function(a, b)
-        if not a or not b then return false end
-
-        -- 1. In range first (within RANGE_CAP beats beyond)
-        if a.inRange ~= b.inRange then
-            return a.inRange  -- true > false
-        end
-
-        -- 2. Distance (no class priority within tier - tier grouping is enough)
-        if not a.distance then return false end
-        if not b.distance then return true end
-        if preferClosest then
-            return a.distance < b.distance
-        else
-            return a.distance > b.distance
-        end
-    end)
+    -- Single combined sort: inRange > distance (uses pre-created comparators, no closure alloc)
+    table_sort(selectedTier, preferClosest and SortClosest or SortFurthest)
 
     return selectedTier[1]
 end

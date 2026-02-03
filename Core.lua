@@ -92,6 +92,9 @@ local function OnEvent()
         -- Check BG state on zone changes
         Szcz.CheckBattleground()
 
+        -- Mark dead cache stale on zone-in (ensures fresh data when entering instances)
+        Szcz.InvalidateDeadCache()
+
         -- Refresh salts state (loads from DB, syncs on zone/login)
         Szcz.RefreshSaltsState()
 
@@ -99,6 +102,7 @@ local function OnEvent()
         Szcz.UpdateGroupState()
 
     elseif event == "RAID_ROSTER_UPDATE" or event == "PARTY_MEMBERS_CHANGED" then
+        Szcz.InvalidateDeadCache()
         Szcz.UpdateGroupState()
 
     elseif event == "PLAYER_REGEN_DISABLED" then
