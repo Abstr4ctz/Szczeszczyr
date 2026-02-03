@@ -20,6 +20,24 @@ local POLL_INTERVAL = 0.5
 local CLEANUP_INTERVAL = 5
 local ICON_CROP = 0.07  -- Crop 7% from each edge to remove ugly borders
 local MAX_NAME_LEN = 7  -- Truncate names longer than this
+local MAX_DISTANCE = 200  -- Pre-generate distance strings up to this
+
+--[[
+    Pre-generated strings to avoid runtime allocations
+]]
+-- Distance strings: distanceStrings[0] = "0yd", distanceStrings[1] = "1yd", etc.
+local distanceStrings = {}
+for i = 0, MAX_DISTANCE do
+    distanceStrings[i] = i .. "yd"
+end
+distanceStrings[-1] = "?"  -- For nil/invalid distances
+
+-- Truncated name cache: truncatedNames["LongPlayerName"] = "LongPl."
+local truncatedNames = {}
+
+-- Button text cache to avoid regenerating identical strings
+local saltsTextCache = { guid = nil, dist = nil, los = nil, text = nil }
+local resTextCache = { guid = nil, dist = nil, los = nil, text = nil }
 
 -- State
 local polling = false
@@ -148,14 +166,20 @@ local function SetButtonEnabled(btn, enabled)
 end
 
 --[[
-    Truncate name if too long
+    Truncate name if too long (cached to avoid repeated allocations)
 ]]
 local function TruncateName(name, maxLen)
     if not name then return "?" end
-    if string.len(name) > maxLen then
-        return string.sub(name, 1, maxLen - 1) .. "."
+    if string.len(name) <= maxLen then
+        return name  -- No allocation, return original
     end
-    return name
+    -- Check cache first
+    local cached = truncatedNames[name]
+    if cached then return cached end
+    -- Generate and cache
+    local truncated = string.sub(name, 1, maxLen - 1) .. "."
+    truncatedNames[name] = truncated
+    return truncated
 end
 
 --[[
@@ -216,11 +240,53 @@ resButton:SetScript("OnClick", function()
 end)
 
 --[[
-    Format distance
+    Format distance (uses pre-generated lookup table, zero allocation)
 ]]
 local function FormatDistance(dist)
-    if not dist then return "?" end
-    return floor(dist + 0.5) .. "yd"
+    if not dist then return distanceStrings[-1] end
+    local rounded = floor(dist + 0.5)
+    if rounded > MAX_DISTANCE then rounded = MAX_DISTANCE end
+    if rounded < 0 then rounded = 0 end
+    return distanceStrings[rounded]
+end
+
+--[[
+    Get rounded distance for cache key comparison
+]]
+local function GetRoundedDistance(dist)
+    if not dist then return -1 end
+    local rounded = floor(dist + 0.5)
+    if rounded > MAX_DISTANCE then return MAX_DISTANCE end
+    if rounded < 0 then return 0 end
+    return rounded
+end
+
+--[[
+    Generate button text with caching (only allocates when inputs change)
+    Returns: text, didChange
+]]
+local function GetCachedButtonText(cache, guid, name, dist, inLoS)
+    local roundedDist = GetRoundedDistance(dist)
+    local losKey = (inLoS == false) and 1 or 0  -- Use number for comparison, not string
+
+    -- Check if cache is still valid
+    if cache.guid == guid and cache.dist == roundedDist and cache.los == losKey then
+        return cache.text, false
+    end
+
+    -- Cache miss - generate new text (this is the only place we allocate)
+    local truncName = TruncateName(name, MAX_NAME_LEN)
+    local losIndicator = (inLoS == false) and " !" or ""
+    local distStr = distanceStrings[roundedDist] or distanceStrings[-1]
+    local text = truncName .. losIndicator .. " " .. distStr
+
+    -- Update cache
+    cache.guid = guid
+    cache.dist = roundedDist
+    cache.los = losKey
+    cache.text = text
+
+    return text, true
 end
 
 --[[
@@ -273,8 +339,10 @@ local function UpdateButtonState()
     local canUseSalts = Szcz.CanUseSalts()
 
     if canUseSalts and saltsTarget then
-        local losIndicator = (saltsTarget.inLoS == false) and " !" or ""
-        saltsButton.text:SetText(TruncateName(saltsTarget.name, MAX_NAME_LEN) .. losIndicator .. " " .. FormatDistance(saltsTarget.distance))
+        local text, changed = GetCachedButtonText(saltsTextCache, saltsTarget.guid, saltsTarget.name, saltsTarget.distance, saltsTarget.inLoS)
+        if changed then
+            saltsButton.text:SetText(text)
+        end
         SetButtonEnabled(saltsButton, true)
         saltsButton:EnableMouse(true)
         saltsButton:Show()
@@ -289,6 +357,8 @@ local function UpdateButtonState()
             saltsButton.oor:Show()
         end
     elseif canUseSalts then
+        -- Invalidate cache so next target triggers SetText
+        saltsTextCache.guid = nil
         if err == "No dead players" then
             saltsButton.text:SetText("All Alive")
         else
@@ -300,6 +370,7 @@ local function UpdateButtonState()
         saltsButton.oor:Hide()
     else
         -- No salts or on cooldown - hide the button entirely (no mouse)
+        saltsTextCache.guid = nil  -- Invalidate cache
         saltsButton:EnableMouse(false)
         saltsButton:Hide()
         saltsButton.oor:Hide()
@@ -315,10 +386,14 @@ local function UpdateButtonState()
         end
 
         if spellTarget then
-            local losIndicator = (spellTarget.inLoS == false) and " !" or ""
-            resButton.text:SetText(TruncateName(spellTarget.name, MAX_NAME_LEN) .. losIndicator .. " " .. FormatDistance(spellTarget.distance))
+            local text, changed = GetCachedButtonText(resTextCache, spellTarget.guid, spellTarget.name, spellTarget.distance, spellTarget.inLoS)
+            if changed then
+                resButton.text:SetText(text)
+            end
             SetButtonEnabled(resButton, true)
         else
+            -- Invalidate cache so next target triggers SetText
+            resTextCache.guid = nil
             if err == "No dead players" then
                 resButton.text:SetText("All Alive")
             else
