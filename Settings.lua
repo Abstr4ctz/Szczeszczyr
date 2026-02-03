@@ -20,6 +20,8 @@ local DEFAULTS = {
     feedbackRelPoint = nil,
     feedbackX = nil,
     feedbackY = nil,
+    -- Salts cooldown (Unix timestamp, persists across sessions)
+    saltsCdEndUnix = nil,
 }
 
 --[[

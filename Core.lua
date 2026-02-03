@@ -7,6 +7,9 @@
 Szczeszczyr = {}
 local Szcz = Szczeszczyr
 
+-- Localize
+local time = time
+
 -- Mod detection flags
 Szcz.hasSuperWow = false
 Szcz.hasUnitXP = false
@@ -73,9 +76,6 @@ local function OnEvent()
     elseif event == "PLAYER_LOGIN" then
         CachePlayerInfo()
 
-        -- Initial salts scan
-        Szcz.ScanForSalts()
-
         -- Cache res spell slot for cooldown/range checking
         Szcz.CacheResSpellSlot()
 
@@ -92,6 +92,9 @@ local function OnEvent()
         -- Check BG state on zone changes
         Szcz.CheckBattleground()
 
+        -- Refresh salts state (loads from DB, syncs on zone/login)
+        Szcz.RefreshSaltsState()
+
         -- Refresh group state
         Szcz.UpdateGroupState()
 
@@ -106,9 +109,9 @@ local function OnEvent()
         Szcz.UpdateCombatState(false)
 
     elseif event == "BAG_UPDATE" then
-        -- Only scan out of combat
+        -- Refresh salts state out of combat (throttled internally)
         if not Szcz.state.inCombat then
-            Szcz.ScanForSalts()
+            Szcz.RefreshSaltsState()
         end
 
     elseif event == "CHARACTER_POINTS_CHANGED" then
@@ -191,14 +194,15 @@ function Szcz.PrintStatus()
         DEFAULT_CHAT_FRAME:AddMessage("In Group: " .. (Szcz.state.inGroup and "|cff00ff00Yes|r" or "|cffff0000No|r"))
         DEFAULT_CHAT_FRAME:AddMessage("In Combat: " .. (Szcz.state.inCombat and "|cffff0000Yes|r" or "|cff00ff00No|r"))
         DEFAULT_CHAT_FRAME:AddMessage("In BG: " .. (Szcz.state.inBattleground and "|cffff0000Yes|r" or "|cff00ff00No|r"))
-        DEFAULT_CHAT_FRAME:AddMessage("Has Salts: " .. (Szcz.saltsState.available and "|cff00ff00Yes|r" or "|cffff0000No|r"))
+        DEFAULT_CHAT_FRAME:AddMessage("Can Use Salts: " .. (Szcz.CanUseSalts() and "|cff00ff00Yes|r" or "|cffff0000No|r"))
     else
         DEFAULT_CHAT_FRAME:AddMessage("|cffff0000Szcz.state is NIL!|r")
     end
 
     if Szcz.saltsState then
-        DEFAULT_CHAT_FRAME:AddMessage("Salts Count: " .. (Szcz.saltsState.count or 0))
-        DEFAULT_CHAT_FRAME:AddMessage("Salts CD: " .. (Szcz.saltsState.onCooldown and "|cffff0000Yes|r" or "|cff00ff00No|r"))
+        DEFAULT_CHAT_FRAME:AddMessage("Salts In Bags: " .. (Szcz.saltsState.hasSalts and "|cff00ff00Yes|r" or "|cffff0000No|r"))
+        local onCD = Szcz.saltsState.cdEndUnix and time() < Szcz.saltsState.cdEndUnix
+        DEFAULT_CHAT_FRAME:AddMessage("Salts CD: " .. (onCD and "|cffff0000Yes|r" or "|cff00ff00No|r"))
     end
 
     local pendingCount = 0

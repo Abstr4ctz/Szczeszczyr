@@ -56,7 +56,8 @@ function Szcz.UpdateCombatState(inCombat)
         Szcz.HideButtons()
         Szcz.StopCorpseTracking()
     else
-        Szcz.ScanForSalts()
+        -- Refresh salts state after combat (verify CD, handle edge cases)
+        Szcz.RefreshSaltsState()
         if Szcz.state.inGroup then
             Szcz.ShowButtons()
         end

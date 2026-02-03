@@ -408,13 +408,6 @@ local function OnUpdateTick()
     if elapsed < POLL_INTERVAL then return end
     elapsed = 0
 
-    -- Check if salts cooldown has ended (efficient timestamp comparison, no API call)
-    if Szcz.saltsState and Szcz.saltsState.onCooldown and Szcz.saltsState.cdEndTime then
-        if GetTime() >= Szcz.saltsState.cdEndTime then
-            Szcz.ScanForSalts()  -- ONE API call to verify and update state
-        end
-    end
-
     -- Periodic cleanup (every 5s)
     cleanupElapsed = cleanupElapsed + POLL_INTERVAL
     if cleanupElapsed >= CLEANUP_INTERVAL then
@@ -445,6 +438,13 @@ function Szcz.ShowButtons()
     end
 
     if state.inCombat then
+        return
+    end
+
+    -- Gate: only poll if player can actually resurrect someone
+    if not Szcz.CanUseSalts() and not Szcz.CanPlayerRes() then
+        -- Can't res anyone (non-healer with salts on CD or no salts)
+        SetFrameVisible(false)
         return
     end
 
