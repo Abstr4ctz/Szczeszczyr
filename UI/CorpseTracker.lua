@@ -65,9 +65,8 @@ updateFrame:Hide()
     Calculate minimap position for a unit
     Returns uiX, uiY (minimap coords) and distance
 ]]
-local function GetMinimapPosition(unitId)
+local function GetMinimapPosition(unitId, px, py, scale)
     local tx, ty = UnitPosition(unitId)
-    local px, py = UnitPosition("player")
 
     if not tx or not px then
         return nil, nil, nil
@@ -76,11 +75,6 @@ local function GetMinimapPosition(unitId)
     local dx = tx - px
     local dy = ty - py
     local dist = sqrt(dx*dx + dy*dy)
-
-    -- Minimap position calculation
-    local zoom = Minimap:GetZoom() or 5
-    local mapRadius = ZOOM_RANGES[zoom] or 100
-    local scale = MINIMAP_RADIUS / mapRadius
 
     -- Coordinate swap: World X+ (North) -> UI Y+ (Up)
     -- World Y+ (West) -> UI X- (Left)
@@ -103,10 +97,14 @@ end
 ]]
 local function UpdatePositions()
     local RES_RANGE = Szcz.Data.RES_RANGE
+    local px, py = UnitPosition("player")
+    local zoom = Minimap:GetZoom() or 5
+    local mapRadius = ZOOM_RANGES[zoom] or 100
+    local scale = MINIMAP_RADIUS / mapRadius
 
     -- Update salts marker
     if showSaltsDot and trackedSaltsUnit then
-        local uiX, uiY, dist = GetMinimapPosition(trackedSaltsUnit)
+        local uiX, uiY, dist = GetMinimapPosition(trackedSaltsUnit, px, py, scale)
         if uiX then
             -- Color: amber if in range, red otherwise
             if dist <= RES_RANGE then
@@ -126,7 +124,7 @@ local function UpdatePositions()
 
     -- Update res marker
     if showResDot and trackedResUnit then
-        local uiX, uiY, dist = GetMinimapPosition(trackedResUnit)
+        local uiX, uiY, dist = GetMinimapPosition(trackedResUnit, px, py, scale)
         if uiX then
             -- Color: cyan if in range, red otherwise
             if dist <= RES_RANGE then
@@ -161,45 +159,64 @@ end
 ]]
 function Szcz.UpdateCorpseTracking(saltsTarget, resTarget, showSalts, showRes)
     -- Extract unit IDs
-    trackedSaltsUnit = saltsTarget and saltsTarget.unitId or nil
-    trackedResUnit = resTarget and resTarget.unitId or nil
-    showSaltsDot = showSalts and trackedSaltsUnit ~= nil
-    showResDot = showRes and trackedResUnit ~= nil
+    local newTrackedSaltsUnit = saltsTarget and saltsTarget.unitId or nil
+    local newTrackedResUnit = resTarget and resTarget.unitId or nil
+    local newShowSaltsDot = showSalts and newTrackedSaltsUnit ~= nil
+    local newShowResDot = showRes and newTrackedResUnit ~= nil
 
     -- Handle same-target overlap: show one marker based on distance
-    if showSaltsDot and showResDot and saltsTarget and resTarget then
+    if newShowSaltsDot and newShowResDot and saltsTarget and resTarget then
         if saltsTarget.guid and resTarget.guid and saltsTarget.guid == resTarget.guid then
             local RES_RANGE = Szcz.Data.RES_RANGE
             if saltsTarget.distance and saltsTarget.distance <= RES_RANGE then
                 -- Close enough for salts - show salts marker only
-                showResDot = false
+                newShowResDot = false
             else
                 -- Too far for salts - show res marker only
-                showSaltsDot = false
+                newShowSaltsDot = false
             end
         end
     end
 
     -- Set tracked GUID for Tracking.lua to detect when someone else resses our target
     -- Prefer salts target (closest/most immediate), fallback to res target
+    local newTrackedGUID = nil
     if saltsTarget and saltsTarget.guid then
-        Szcz.state.trackedGUID = saltsTarget.guid
+        newTrackedGUID = saltsTarget.guid
     elseif resTarget and resTarget.guid then
-        Szcz.state.trackedGUID = resTarget.guid
-    else
-        Szcz.state.trackedGUID = nil
+        newTrackedGUID = resTarget.guid
     end
 
+    local stateChanged =
+        trackedSaltsUnit ~= newTrackedSaltsUnit or
+        trackedResUnit ~= newTrackedResUnit or
+        showSaltsDot ~= newShowSaltsDot or
+        showResDot ~= newShowResDot or
+        Szcz.state.trackedGUID ~= newTrackedGUID
+
+    trackedSaltsUnit = newTrackedSaltsUnit
+    trackedResUnit = newTrackedResUnit
+    showSaltsDot = newShowSaltsDot
+    showResDot = newShowResDot
+    Szcz.state.trackedGUID = newTrackedGUID
+
     -- Start or stop OnUpdate based on whether anything to track
-    local shouldUpdate = showSaltsDot or showResDot
+    local shouldUpdate = newShowSaltsDot or newShowResDot
     if shouldUpdate then
-        updateFrame:SetScript("OnUpdate", OnUpdate)
-        elapsed = 0
+        if not stateChanged then
+            return
+        end
+        if not updateFrame:GetScript("OnUpdate") then
+            updateFrame:SetScript("OnUpdate", OnUpdate)
+            elapsed = 0
+        end
         UpdatePositions()
     else
-        updateFrame:SetScript("OnUpdate", nil)
-        saltsFrame:Hide()
-        resFrame:Hide()
+        if stateChanged then
+            updateFrame:SetScript("OnUpdate", nil)
+            saltsFrame:Hide()
+            resFrame:Hide()
+        end
     end
 end
 
