@@ -1,7 +1,7 @@
-Requires Superwow
-https://github.com/balakethelock/SuperWoW
-Optionally UnitXP for better range and los tracking
-https://codeberg.org/konaka/UnitXP_SP3/releases
+Requires Superwow  
+https://github.com/balakethelock/SuperWoW  
+Optionally UnitXP for better range and los tracking  
+https://codeberg.org/konaka/UnitXP_SP3/releases  
 
 No overlap smart ressurection and corpse tracking. Activate through mouse clicks and keybinds.
 Handles Powerful Smelling Salts on all classes.
