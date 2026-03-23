@@ -46,6 +46,10 @@ local currentSpellTarget = nil
 local currentSaltsTargetGuid = nil  -- Cached GUID (immutable, survives pool recycling)
 local currentSpellTargetGuid = nil
 
+-- Separate click-through poll driver so hiding the UI frame does not stop OnUpdate
+local pollFrame = CreateFrame("Frame", "SzczeszczyrPollFrame", UIParent)
+pollFrame:EnableMouse(false)
+
 -- Forward declaration for SetFrameVisible (buttonFrame defined below)
 local SetFrameVisible
 
@@ -475,7 +479,7 @@ function Szcz.ShowButtons()
     end
 
     if not polling then
-        buttonFrame:SetScript("OnUpdate", OnUpdateTick)
+        pollFrame:SetScript("OnUpdate", OnUpdateTick)
         polling = true
         elapsed = 0
     end
@@ -490,7 +494,7 @@ end
 function Szcz.HideButtons()
     SetFrameVisible(false)
     if polling then
-        buttonFrame:SetScript("OnUpdate", nil)
+        pollFrame:SetScript("OnUpdate", nil)
         polling = false
     end
 end
