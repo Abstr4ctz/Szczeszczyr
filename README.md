@@ -1,3 +1,8 @@
+Requires Superwow
+https://github.com/balakethelock/SuperWoW
+Optionally UnitXP for better range and los tracking
+https://codeberg.org/konaka/UnitXP_SP3/releases
+
 No overlap smart ressurection and corpse tracking. Activate through mouse clicks and keybinds.
 Handles Powerful Smelling Salts on all classes.
 
@@ -12,7 +17,3 @@ https://github.com/user-attachments/assets/13407acf-5ca2-4cea-a1c9-0904afa432bd
 
 https://github.com/user-attachments/assets/1256442f-1d9b-41b2-b760-a62515d52b05
 
-
-TOD:
-- scan for salts cd more often
-- cancel mid-cast if target recived ressurection from different source
