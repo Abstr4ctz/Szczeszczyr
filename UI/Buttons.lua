@@ -17,7 +17,6 @@ local BUTTON_SIZE = 40
 local TEXT_HEIGHT = 12
 local BUTTON_GAP = 2  -- Small gap between buttons
 local POLL_INTERVAL = 0.5
-local CLEANUP_INTERVAL = 5
 local ICON_CROP = 0.07  -- Crop 7% from each edge to remove ugly borders
 local MAX_NAME_LEN = 7  -- Truncate names longer than this
 local MAX_DISTANCE = 200  -- Pre-generate distance strings up to this
@@ -42,11 +41,14 @@ local resTextCache = { guid = nil, dist = nil, los = nil, text = nil }
 -- State
 local polling = false
 local elapsed = 0
-local cleanupElapsed = 0
 local currentSaltsTarget = nil
 local currentSpellTarget = nil
 local currentSaltsTargetGuid = nil  -- Cached GUID (immutable, survives pool recycling)
 local currentSpellTargetGuid = nil
+
+-- Separate click-through poll driver so hiding the UI frame does not stop OnUpdate
+local pollFrame = CreateFrame("Frame", "SzczeszczyrPollFrame", UIParent)
+pollFrame:EnableMouse(false)
 
 -- Forward declaration for SetFrameVisible (buttonFrame defined below)
 local SetFrameVisible
@@ -324,11 +326,8 @@ local function UpdateButtonState()
         return
     end
 
-    -- Show frame
-    SetFrameVisible(true)
-
     -- Run targeting pipeline
-    local saltsTarget, spellTarget, err = Szcz.GetTargetingResults()
+    local saltsTarget, spellTarget = Szcz.GetTargetingResults()
     currentSaltsTarget = saltsTarget  -- Cache for right-click
     currentSpellTarget = spellTarget
     -- Cache GUIDs separately (immutable strings survive pool recycling)
@@ -337,8 +336,26 @@ local function UpdateButtonState()
 
     -- Update salts button
     local canUseSalts = Szcz.CanUseSalts()
+    local canPlayerRes = Szcz.CanPlayerRes()
+    local showSaltsAction = canUseSalts and saltsTarget ~= nil
+    local showResAction = canPlayerRes and spellTarget ~= nil
 
-    if canUseSalts and saltsTarget then
+    if not showSaltsAction and not showResAction then
+        SetFrameVisible(false)
+        saltsButton:EnableMouse(false)
+        saltsButton:Hide()
+        saltsButton.oor:Hide()
+        resButton:EnableMouse(false)
+        resButton:Hide()
+        resButton.oor:Hide()
+        Szcz.UpdateCorpseTracking(nil, nil, false, false)
+        return
+    end
+
+    -- Show frame only when at least one actionable target exists
+    SetFrameVisible(true)
+
+    if showSaltsAction then
         local text, changed = GetCachedButtonText(saltsTextCache, saltsTarget.guid, saltsTarget.name, saltsTarget.distance, saltsTarget.inLoS)
         if changed then
             saltsButton.text:SetText(text)
@@ -356,20 +373,7 @@ local function UpdateButtonState()
         else
             saltsButton.oor:Show()
         end
-    elseif canUseSalts then
-        -- Invalidate cache so next target triggers SetText
-        saltsTextCache.guid = nil
-        if err == "No dead players" then
-            saltsButton.text:SetText("All Alive")
-        else
-            saltsButton.text:SetText("All Ressed")
-        end
-        SetButtonEnabled(saltsButton, false)
-        saltsButton:EnableMouse(true)
-        saltsButton:Show()
-        saltsButton.oor:Hide()
     else
-        -- No salts or on cooldown - hide the button entirely (no mouse)
         saltsTextCache.guid = nil  -- Invalidate cache
         saltsButton:EnableMouse(false)
         saltsButton:Hide()
@@ -377,7 +381,7 @@ local function UpdateButtonState()
     end
 
     -- Update res button (healers only)
-    if Szcz.CanPlayerRes() then
+    if canPlayerRes then
         local Data = Szcz.Data
         local icon = Data and Data.CLASS_RES_ICONS and Data.CLASS_RES_ICONS[Szcz.playerClass]
         if icon then
@@ -385,34 +389,22 @@ local function UpdateButtonState()
             resButton.icon:SetTexCoord(ICON_CROP, 1 - ICON_CROP, ICON_CROP, 1 - ICON_CROP)
         end
 
-        if spellTarget then
+        if showResAction then
             local text, changed = GetCachedButtonText(resTextCache, spellTarget.guid, spellTarget.name, spellTarget.distance, spellTarget.inLoS)
             if changed then
                 resButton.text:SetText(text)
             end
             SetButtonEnabled(resButton, true)
-        else
-            -- Invalidate cache so next target triggers SetText
-            resTextCache.guid = nil
-            if err == "No dead players" then
-                resButton.text:SetText("All Alive")
-            else
-                resButton.text:SetText("All Ressed")
+            -- Update cooldown spiral
+            local resSpellSlot = Szcz.GetResSpellSlot()
+            if resSpellSlot then
+                local start, duration = GetSpellCooldown(resSpellSlot, BOOKTYPE_SPELL)
+                if start and start > 0 and duration and duration > 0 then
+                    CooldownFrame_SetTimer(resButton.cooldown, start, duration, 1)
+                end
             end
-            SetButtonEnabled(resButton, false)
-        end
 
-        -- Update cooldown spiral
-        local resSpellSlot = Szcz.GetResSpellSlot()
-        if resSpellSlot then
-            local start, duration = GetSpellCooldown(resSpellSlot, BOOKTYPE_SPELL)
-            if start and start > 0 and duration and duration > 0 then
-                CooldownFrame_SetTimer(resButton.cooldown, start, duration, 1)
-            end
-        end
-
-        -- Update out-of-range indicator
-        if spellTarget then
+            -- Update out-of-range indicator
             local RES_RANGE = Data and Data.RES_RANGE or 30
             local inRange = spellTarget.distance and spellTarget.distance <= RES_RANGE
             if inRange then
@@ -421,21 +413,28 @@ local function UpdateButtonState()
                 resButton.oor:Show()
             end
         else
+            resTextCache.guid = nil  -- Invalidate cache
+            SetButtonEnabled(resButton, false)
+            resButton:EnableMouse(false)
+            resButton:Hide()
             resButton.oor:Hide()
+            -- If the spell button is hidden, clear any old cooldown visual
+            CooldownFrame_SetTimer(resButton.cooldown, 0, 0, 0)
         end
 
-        resButton:EnableMouse(true)
-        resButton:Show()
+        if showResAction then
+            resButton:EnableMouse(true)
+            resButton:Show()
+        end
     else
         -- Not a healer - hide the button (no mouse)
         resButton:EnableMouse(false)
         resButton:Hide()
+        resButton.oor:Hide()
     end
 
     -- Update minimap corpse tracking (synced with button targets)
-    local showSalts = canUseSalts and saltsTarget ~= nil
-    local showRes = Szcz.CanPlayerRes() and spellTarget ~= nil
-    Szcz.UpdateCorpseTracking(saltsTarget, spellTarget, showSalts, showRes)
+    Szcz.UpdateCorpseTracking(saltsTarget, spellTarget, showSaltsAction, showResAction)
 end
 
 --[[
@@ -445,13 +444,6 @@ local function OnUpdateTick()
     elapsed = elapsed + arg1
     if elapsed < POLL_INTERVAL then return end
     elapsed = 0
-
-    -- Periodic cleanup (every 5s)
-    cleanupElapsed = cleanupElapsed + POLL_INTERVAL
-    if cleanupElapsed >= CLEANUP_INTERVAL then
-        cleanupElapsed = 0
-        Szcz.CleanStalePending()
-    end
 
     UpdateButtonState()
 end
@@ -487,13 +479,11 @@ function Szcz.ShowButtons()
     end
 
     if not polling then
-        buttonFrame:SetScript("OnUpdate", OnUpdateTick)
+        pollFrame:SetScript("OnUpdate", OnUpdateTick)
         polling = true
         elapsed = 0
-        cleanupElapsed = 0
     end
 
-    SetFrameVisible(true)
     UpdateButtonState()
 end
 
@@ -504,7 +494,7 @@ end
 function Szcz.HideButtons()
     SetFrameVisible(false)
     if polling then
-        buttonFrame:SetScript("OnUpdate", nil)
+        pollFrame:SetScript("OnUpdate", nil)
         polling = false
     end
 end

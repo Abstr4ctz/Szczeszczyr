@@ -19,7 +19,6 @@ local UnitClass = UnitClass
 local UnitName = UnitName
 local GetTime = GetTime
 local table_getn = table.getn
-local table_sort = table.sort
 local math_sqrt = math.sqrt
 local pairs = pairs
 
@@ -43,26 +42,6 @@ local MAX_POOL_SIZE = 40  -- Max raid size
 
 local function WipeTable(t)
     for k in pairs(t) do t[k] = nil end
-end
-
---[[
-    Pre-created sort comparators (avoid closure allocation every call)
-    Used by SelectFromList - choosing between these is a simple branch, no alloc
-]]
-local function SortClosest(a, b)
-    if not a or not b then return false end
-    if a.inRange ~= b.inRange then return a.inRange end
-    if not a.distance then return false end
-    if not b.distance then return true end
-    return a.distance < b.distance
-end
-
-local function SortFurthest(a, b)
-    if not a or not b then return false end
-    if a.inRange ~= b.inRange then return a.inRange end
-    if not a.distance then return false end
-    if not b.distance then return true end
-    return a.distance > b.distance
 end
 
 local function WipeTiers()
@@ -89,6 +68,7 @@ local function ReturnPlayerToPool(player)
         player.guid = nil
         player.name = nil
         player.distance = nil
+        player.inRange = nil
         player.inLoS = nil
         playerPoolSize = playerPoolSize + 1
         playerPool[playerPoolSize] = player
@@ -339,6 +319,10 @@ end
     Falls back to SuperWoW's 2D calculation otherwise
 ]]
 function Szcz.GetDistance(unitId)
+    return Szcz.GetDistanceWithPlayerPos(unitId, nil, nil)
+end
+
+function Szcz.GetDistanceWithPlayerPos(unitId, playerX, playerY)
     -- Use UnitXP's 3D distance if available (more accurate on terrain)
     if Szcz.hasUnitXP then
         local dist = UnitXP("distanceBetween", "player", unitId)
@@ -346,7 +330,10 @@ function Szcz.GetDistance(unitId)
     end
 
     -- Fallback to 2D calculation via SuperWoW
-    local px, py = UnitPosition("player")
+    local px, py = playerX, playerY
+    if not px then
+        px, py = UnitPosition("player")
+    end
     local ux, uy = UnitPosition(unitId)
     if px and ux then
         local dx = px - ux
@@ -357,31 +344,21 @@ function Szcz.GetDistance(unitId)
 end
 
 --[[
-    Select best target from a list
-    mode: "salts" or "spell"
+    Prepare candidate metadata and group the list by tier once.
 
     Priority order:
-    1. Class tier (tier 1 > tier 2 > tier 3) - handled by tier grouping
+    1. Class tier (tier 1 > tier 2 > tier 3)
     2. In range (within RANGE_CAP beats beyond RANGE_CAP)
     3. Distance (salts=closest, spell=configurable)
 
-    LoS is NOT used for sorting (unreliable with terrain height)
-    LoS is calculated for visual indicator only (requires UnitXP)
+    LoS is NOT used for selection (unreliable with terrain height).
+    It is calculated later only for the final displayed winners.
 ]]
-local function SelectFromList(players, playerCount, mode)
+local function PrepareSelectionData(players, playerCount)
     local Data = Szcz.Data
     local CLASS_TIER = Data.CLASS_TIER or {}
     local TARGETING = Data.TARGETING or {}
     local RANGE_CAP = TARGETING.RANGE_CAP or 100
-
-    -- Determine distance preference
-    local preferClosest
-    if mode == "salts" then
-        preferClosest = true
-    else
-        local distMode = TARGETING.SPELL_DISTANCE_MODE or "furthest"
-        preferClosest = (distMode == "closest")
-    end
 
     -- Wipe and group by tier (reset pre-allocated tierCounts, no table creation)
     WipeTiers()
@@ -390,38 +367,54 @@ local function SelectFromList(players, playerCount, mode)
     for i = 1, playerCount do
         local player = players[i]
         local tier = CLASS_TIER[player.classFile] or 3
+        player.inRange = (player.distance and player.distance <= RANGE_CAP) or false
         tierCounts[tier] = tierCounts[tier] + 1
         tiersPool[tier][tierCounts[tier]] = player
     end
 
     -- Find highest priority non-empty tier
-    local selectedTier, selectedCount = nil, 0
     for i = 1, 3 do
         if tierCounts[i] > 0 then
-            selectedTier = tiersPool[i]
-            selectedCount = tierCounts[i]
-            break
+            return tiersPool[i], tierCounts[i], TARGETING
         end
     end
-    if not selectedTier then return nil end
+    return nil, 0, TARGETING
+end
 
-    -- Pre-calculate derived fields for sorting
-    for i = 1, selectedCount do
-        local p = selectedTier[i]
-        p.inRange = (p.distance and p.distance <= RANGE_CAP) or false
-        -- Calculate LoS for visual indicator only (requires UnitXP)
-        -- Note: can't use "hasUnitXP and IsInLoS() or true" because false or true = true
-        if Szcz.hasUnitXP then
-            p.inLoS = Szcz.IsInLoS(p.unitId)
-        else
-            p.inLoS = true
+local function IsBetterCandidate(candidate, best, preferClosest)
+    if not candidate then return false end
+    if not best then return true end
+    if candidate.inRange ~= best.inRange then return candidate.inRange end
+
+    local candidateDistance = candidate.distance
+    local bestDistance = best.distance
+    if not candidateDistance then return false end
+    if not bestDistance then return true end
+
+    if preferClosest then
+        return candidateDistance < bestDistance
+    end
+    return candidateDistance > bestDistance
+end
+
+local function SelectBestCandidate(players, playerCount, preferClosest)
+    local best = nil
+    for i = 1, playerCount do
+        local candidate = players[i]
+        if IsBetterCandidate(candidate, best, preferClosest) then
+            best = candidate
         end
     end
+    return best
+end
 
-    -- Single combined sort: inRange > distance (uses pre-created comparators, no closure alloc)
-    table_sort(selectedTier, preferClosest and SortClosest or SortFurthest)
-
-    return selectedTier[1]
+local function AnnotateWinnerLoS(target)
+    if not target then return end
+    if Szcz.hasUnitXP then
+        target.inLoS = Szcz.IsInLoS(target.unitId)
+    else
+        target.inLoS = true
+    end
 end
 
 --[[
@@ -458,20 +451,37 @@ function Szcz.GetTargetingResults()
     end
 
     -- Step 6: Calculate distances for all valid targets
+    local playerX, playerY = nil, nil
+    if finalCount > 0 and not Szcz.hasUnitXP then
+        playerX, playerY = UnitPosition("player")
+    end
     for i = 1, finalCount do
-        validPool[i].distance = Szcz.GetDistance(validPool[i].unitId)
+        validPool[i].distance = Szcz.GetDistanceWithPlayerPos(validPool[i].unitId, playerX, playerY)
     end
 
-    -- Step 7: Select for salts (closest)
+    -- Step 7: Prepare shared selection data once
+    local selectedTier, selectedCount, TARGETING = PrepareSelectionData(validPool, finalCount)
+
+    -- Step 8: Select for salts (closest)
     local saltsTarget = nil
-    if finalCount > 0 then
-        saltsTarget = SelectFromList(validPool, finalCount, "salts")
+    if selectedCount > 0 then
+        saltsTarget = SelectBestCandidate(selectedTier, selectedCount, true)
     end
 
-    -- Step 8: Select for spell (configurable)
+    -- Step 9: Select for spell (configurable)
     local spellTarget = nil
-    if finalCount > 0 then
-        spellTarget = SelectFromList(validPool, finalCount, "spell")
+    if selectedCount > 0 then
+        local distMode = TARGETING.SPELL_DISTANCE_MODE or "furthest"
+        spellTarget = SelectBestCandidate(selectedTier, selectedCount, distMode == "closest")
+    end
+
+    -- Step 10: Calculate LoS only for displayed winners
+    if saltsTarget and spellTarget and saltsTarget.guid == spellTarget.guid then
+        AnnotateWinnerLoS(saltsTarget)
+        spellTarget.inLoS = saltsTarget.inLoS
+    else
+        AnnotateWinnerLoS(saltsTarget)
+        AnnotateWinnerLoS(spellTarget)
     end
 
     -- Note: We don't return players to pool here because the caller may need them

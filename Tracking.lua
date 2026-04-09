@@ -8,6 +8,7 @@ local Szcz = Szczeszczyr
 -- Localize globals for hot path
 local pairs = pairs
 local GetTime = GetTime
+local CLEANUP_INTERVAL = 5
 
 --[[
     Pending resurrections table (supports multiple casters per target)
@@ -53,6 +54,7 @@ local RECENTLY_TIMEOUT = Szcz.Data.RECENTLY_TIMEOUT
     Dedicated event frame for UNIT_CASTEVENT
 ]]
 local castFrame = CreateFrame("Frame", "SzczeszczyrCastFrame")
+local lastCleanupTime = 0
 
 local function OnCastEvent()
     -- Fast exit: check spell ID first
@@ -63,44 +65,53 @@ local function OnCastEvent()
     local spellType = TRACKED[spellId]
     if not spellType then return end
 
+    local now = GetTime()
+    if now - lastCleanupTime >= CLEANUP_INTERVAL then
+        lastCleanupTime = now
+        Szcz.CleanStalePending()
+    end
+
     local eventType = arg3
     local casterGUID = arg1
     local targetGUID = arg2
-    local now = GetTime()
+    local state = Szcz.state
+    local pendingRes = Szcz.pendingRes
+    local casterToTarget = Szcz.casterToTarget
+    local recentlyRessed = Szcz.recentlyRessed
 
     if eventType == "START" then
         local duration = arg5 * 0.001
         local endTime = now + duration
 
         -- Initialize target entry if needed (supports multiple casters)
-        if not Szcz.pendingRes[targetGUID] then
-            Szcz.pendingRes[targetGUID] = { casters = {} }
+        if not pendingRes[targetGUID] then
+            pendingRes[targetGUID] = { casters = {} }
         end
 
         -- Add/update this caster's entry
-        Szcz.pendingRes[targetGUID].casters[casterGUID] = endTime
-        Szcz.casterToTarget[casterGUID] = targetGUID
-        Szcz.recentlyRessed[targetGUID] = nil
+        pendingRes[targetGUID].casters[casterGUID] = endTime
+        casterToTarget[casterGUID] = targetGUID
+        recentlyRessed[targetGUID] = nil
 
         -- If someone else started ressing our tracked target, clear tracking
-        if targetGUID == Szcz.state.trackedGUID and casterGUID ~= Szcz.playerGUID then
+        if targetGUID == state.trackedGUID and casterGUID ~= Szcz.playerGUID then
             Szcz.StopCorpseTracking()
             Szcz.ForceButtonUpdate()
         end
 
     elseif eventType == "CAST" then
         -- Remove this caster from the target's casters list
-        Szcz.casterToTarget[casterGUID] = nil
-        if Szcz.pendingRes[targetGUID] then
-            Szcz.pendingRes[targetGUID].casters[casterGUID] = nil
+        casterToTarget[casterGUID] = nil
+        if pendingRes[targetGUID] then
+            pendingRes[targetGUID].casters[casterGUID] = nil
             -- Only remove target entry if no active casters remain
             if not HasActiveCasters(targetGUID) then
-                Szcz.pendingRes[targetGUID] = nil
+                pendingRes[targetGUID] = nil
             end
         end
 
         -- Target received res, add to recently ressed
-        Szcz.recentlyRessed[targetGUID] = now
+        recentlyRessed[targetGUID] = now
 
         -- If player cast salts, mark on cooldown
         if spellType == "salts" and casterGUID == Szcz.playerGUID then
@@ -108,7 +119,7 @@ local function OnCastEvent()
         end
 
         -- If our tracked target was ressed, clear tracking
-        if targetGUID == Szcz.state.trackedGUID then
+        if targetGUID == state.trackedGUID then
             Szcz.StopCorpseTracking()
         end
 
@@ -118,16 +129,16 @@ local function OnCastEvent()
         -- FAIL has empty targetGUID in SuperWoW - use reverse lookup
         local actualTarget = targetGUID
         if not actualTarget or actualTarget == "" then
-            actualTarget = Szcz.casterToTarget[casterGUID]
+            actualTarget = casterToTarget[casterGUID]
         end
 
         -- Remove this caster's entries
-        Szcz.casterToTarget[casterGUID] = nil
-        if actualTarget and Szcz.pendingRes[actualTarget] then
-            Szcz.pendingRes[actualTarget].casters[casterGUID] = nil
+        casterToTarget[casterGUID] = nil
+        if actualTarget and pendingRes[actualTarget] then
+            pendingRes[actualTarget].casters[casterGUID] = nil
             -- Only remove target entry if no active casters remain
             if not HasActiveCasters(actualTarget) then
-                Szcz.pendingRes[actualTarget] = nil
+                pendingRes[actualTarget] = nil
             end
         end
 
@@ -139,6 +150,7 @@ end
     Register UNIT_CASTEVENT (called when entering group)
 ]]
 function Szcz.RegisterCastTracking()
+    lastCleanupTime = 0
     castFrame:RegisterEvent("UNIT_CASTEVENT")
     castFrame:SetScript("OnEvent", OnCastEvent)
 end
@@ -147,6 +159,7 @@ end
     Unregister UNIT_CASTEVENT (called when leaving group)
 ]]
 function Szcz.UnregisterCastTracking()
+    lastCleanupTime = 0
     castFrame:UnregisterEvent("UNIT_CASTEVENT")
     castFrame:SetScript("OnEvent", nil)
 end

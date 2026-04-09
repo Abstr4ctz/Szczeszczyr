@@ -95,7 +95,7 @@ local function OnEvent()
         -- Mark dead cache stale on zone-in (ensures fresh data when entering instances)
         Szcz.InvalidateDeadCache()
 
-        -- Refresh salts state (loads from DB, syncs on zone/login)
+        -- Refresh salts state on zone/login
         Szcz.RefreshSaltsState()
 
         -- Refresh group state
@@ -113,10 +113,7 @@ local function OnEvent()
         Szcz.UpdateCombatState(false)
 
     elseif event == "BAG_UPDATE" then
-        -- Refresh salts state out of combat (throttled internally)
-        if not Szcz.state.inCombat then
-            Szcz.RefreshSaltsState()
-        end
+        Szcz.RefreshSaltsStateFromBagUpdate()
 
     elseif event == "CHARACTER_POINTS_CHANGED" then
         -- Talent respec moves spell slots - re-cache for cooldown display
